@@ -121,7 +121,7 @@ export const StorageManager: React.FC<{ onClose: () => void }> = ({ onClose }) =
           </div>
           <p>Used: {formatBytes(storageInfo.used)} / ~5 MB ({storagePercentage.toFixed(1)}%)</p>
           <ul style={{ fontSize: '14px' }}>
-            <li>FossFLOW diagrams: {formatBytes(storageInfo.diagrams)}</li>
+            <li>IsoForge diagrams: {formatBytes(storageInfo.diagrams)}</li>
             <li>Other data: {formatBytes(storageInfo.otherData)}</li>
           </ul>
         </div>

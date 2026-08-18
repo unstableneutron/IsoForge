@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Isoflow } from 'fossflow';
 import { flattenCollections } from '@isoflow/isopacks/dist/utils';
 import isoflowIsopack from '@isoflow/isopacks/dist/isoflow';
@@ -14,6 +14,8 @@ import { storageManager } from './services/storageService';
 import ChangeLanguage from './components/ChangeLanguage';
 import { allLocales } from 'fossflow';
 import { useIconPackManager, IconPackName } from './services/iconPackManager';
+import { CelldSnapshot, modelFingerprint } from './services/celldSyncService';
+import { useCelldDiagramSync } from './hooks/useCelldDiagramSync';
 import './App.css';
 import { BrowserRouter, Route, Routes, useParams } from 'react-router-dom';
 
@@ -26,6 +28,7 @@ interface SavedDiagram {
   data: any;
   createdAt: string;
   updatedAt: string;
+  serverBacked?: boolean;
 }
 
 function App() {
@@ -65,8 +68,9 @@ function EditorPage() {
   const [showStorageManager, setShowStorageManager] = useState(false);
   const [showDiagramManager, setShowDiagramManager] = useState(false);
   const [serverStorageAvailable, setServerStorageAvailable] = useState(false);
-  const isReadonlyUrl =
-    window.location.pathname.startsWith('/display/') && readonlyDiagramId;
+  const isReadonlyUrl = Boolean(
+    window.location.pathname.startsWith('/display/') && readonlyDiagramId
+  );
 
   // Initialize with empty diagram data
   // Create default colors for connectors
@@ -125,6 +129,8 @@ function EditorPage() {
   // Check if readonlyDiagramId exists - if exists, load diagram in view-only mode
   useEffect(() => {
     if (!isReadonlyUrl || !serverStorageAvailable) return;
+    const readonlyId = readonlyDiagramId;
+    if (!readonlyId) return;
     const loadReadonlyDiagram = async () => {
       try {
         const storage = storageManager.getStorage();
@@ -134,15 +140,16 @@ function EditorPage() {
           return d.id === readonlyDiagramId;
         });
         // Load the diagram data from server storage
-        const data = await storage.loadDiagram(readonlyDiagramId);
+        const data = await storage.loadDiagram(readonlyId);
         // Convert to SavedDiagram interface format
         const readonlyDiagram: SavedDiagram = {
-          id: readonlyDiagramId,
+          id: readonlyId,
           name: diagramInfo?.name || data.title || 'Readonly Diagram',
           data: data,
           createdAt: new Date().toISOString(),
           updatedAt:
-            diagramInfo?.lastModified.toISOString() || new Date().toISOString()
+            diagramInfo?.lastModified.toISOString() || new Date().toISOString(),
+          serverBacked: true
         };
         await loadDiagram(readonlyDiagram, true);
       } catch (error) {
@@ -268,7 +275,8 @@ function EditorPage() {
       name: diagramName,
       data: savedData,
       createdAt: currentDiagram?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      serverBacked: currentDiagram?.serverBacked
     };
 
     if (currentDiagram) {
@@ -409,6 +417,87 @@ function EditorPage() {
     }
   };
 
+  // i18n
+  const { t, i18n } = useTranslation('app');
+
+  // Get locale with fallback to en-US if not found
+  const currentLocale = allLocales[i18n.language as keyof typeof allLocales] || allLocales['en-US'];
+
+  const canonicalEchoFingerprintRef = useRef<string | null>(null);
+  const canonicalApplyGuardUntilRef = useRef(0);
+  const applyCanonicalModel = useCallback(
+    (canonicalModel: any, snapshot: CelldSnapshot<any>) => {
+      // Older saves contain only imported icons. New saves may contain the
+      // complete icon registry. Preserve both formats for FossFLOW.
+      const loadedIcons = canonicalModel.icons || [];
+      const hasDefaultIcons = loadedIcons.some((icon: any) => {
+        return (
+          icon.collection === 'isoflow' ||
+          icon.collection === 'aws' ||
+          icon.collection === 'gcp'
+        );
+      });
+      const importedIcons = loadedIcons.filter((icon: any) => {
+        return icon.collection === 'imported';
+      });
+      const finalIcons = hasDefaultIcons
+        ? loadedIcons
+        : [...iconPackManager.loadedIcons, ...importedIcons];
+
+      const canonicalData: any = {
+        ...canonicalModel,
+        title:
+          canonicalModel.title ||
+          snapshot.name ||
+          currentDiagram?.name ||
+          'Untitled Diagram',
+        icons: finalIcons,
+        colors: canonicalModel.colors?.length
+          ? canonicalModel.colors
+          : defaultColors,
+        items: canonicalModel.items || [],
+        views: canonicalModel.views || [],
+        fitToScreen: canonicalModel.fitToScreen !== false,
+        fitToView: canonicalModel.fitToView !== false
+      };
+
+      // Isoflow reports an update while applying initialData. Remember the
+      // prepared model so that callback is not sent back as a new change.
+      canonicalEchoFingerprintRef.current = modelFingerprint(canonicalData);
+      // FossFLOW may emit several normalized store snapshots while it mounts
+      // (for example after resolving bundled icons). Those are hydration, not
+      // user mutations, even when their JSON differs from initialData.
+      canonicalApplyGuardUntilRef.current = Date.now() + 1000;
+      setDiagramData(canonicalData);
+      setCurrentModel(canonicalData);
+      setDiagramName(snapshot.name || canonicalData.title);
+      setHasUnsavedChanges(false);
+      setCurrentDiagram((previous) =>
+        previous
+          ? {
+              ...previous,
+              name: snapshot.name || previous.name,
+              data: canonicalData,
+              updatedAt: new Date().toISOString(),
+              serverBacked: true
+            }
+          : previous
+      );
+      setFossflowKey((previous) => previous + 1);
+    },
+    [currentDiagram?.name, iconPackManager.loadedIcons]
+  );
+
+  const diagramSync = useCelldDiagramSync<any>({
+    diagramId:
+      currentDiagram?.serverBacked && currentDiagram.id
+        ? currentDiagram.id
+        : undefined,
+    enabled: serverStorageAvailable,
+    readOnly: isReadonlyUrl,
+    onCanonicalModel: applyCanonicalModel
+  });
+
   const handleModelUpdated = useCallback((model: any) => {
     // Store the current model state whenever it updates
     // The model from Isoflow contains the COMPLETE state including all icons
@@ -420,16 +509,26 @@ function EditorPage() {
       colors: model.colors || defaultColors,
       items: model.items || [],
       views: model.views || [],
-      fitToScreen: true
+      fitToScreen: true,
+      fitToView: true
     };
 
     setCurrentModel(updatedModel);
     setDiagramData(updatedModel);
 
-    if (!isReadonlyUrl) {
+    const isCanonicalEcho =
+      Date.now() < canonicalApplyGuardUntilRef.current ||
+      canonicalEchoFingerprintRef.current === modelFingerprint(updatedModel);
+    if (isCanonicalEcho) {
+      // Keep the marker sticky for the lifetime of this canonical apply:
+      // FossFLOW may report more than one store update while initialData is
+      // being installed. A later real edit changes the fingerprint and is
+      // submitted normally.
+    } else if (!isReadonlyUrl) {
       setHasUnsavedChanges(true);
+      diagramSync.submitLocalModel(updatedModel);
     }
-  }, [isReadonlyUrl]);
+  }, [diagramName, diagramSync.submitLocalModel, isReadonlyUrl]);
 
   const exportDiagram = () => {
     // Use the most recent model data - prefer currentModel as it gets updated by handleModelUpdated
@@ -555,10 +654,11 @@ function EditorPage() {
 
     const newDiagram = {
       id,
-      name: data.name || 'Loaded Diagram',
+      name: data.name || data.title || 'Loaded Diagram',
       data: mergedData,
       createdAt: data.created || new Date().toISOString(),
-      updatedAt: data.lastModified || new Date().toISOString()
+      updatedAt: data.lastModified || new Date().toISOString(),
+      serverBacked: true
     };
 
     console.log(`App: Setting all state for diagram ${id}`);
@@ -583,12 +683,6 @@ function EditorPage() {
       `App: Finished loading diagram ${id}, final icon count: ${finalIcons.length}`
     );
   };
-
-  // i18n
-  const { t, i18n } = useTranslation('app');
-  
-  // Get locale with fallback to en-US if not found
-  const currentLocale = allLocales[i18n.language as keyof typeof allLocales] || allLocales['en-US'];
 
   // Auto-save functionality
   useEffect(() => {
@@ -695,6 +789,9 @@ function EditorPage() {
   return (
     <div className="App">
       <div className="toolbar">
+        <span className="app-brand" aria-label="IsoForge">
+          IsoForge
+        </span>
         {!isReadonlyUrl && (
           <>
             <button onClick={newDiagram}>{t('nav.newDiagram')}</button>
@@ -789,6 +886,17 @@ function EditorPage() {
             </>
           )}
         </span>
+        {currentDiagram?.serverBacked && (
+          <span
+            className={`sync-status sync-status-${diagramSync.status}`}
+            title={diagramSync.error || 'IsoForge server synchronization'}
+          >
+            {diagramSync.status === 'synchronized' ||
+            diagramSync.status === 'saving'
+              ? `IsoForge sync · rev ${diagramSync.revision}`
+              : `IsoForge sync · ${diagramSync.status}`}
+          </span>
+        )}
       </div>
 
       <div className="fossflow-container">

@@ -1,0 +1,25 @@
+{
+  "name": "isoforge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-18",
+  "durable_objects": {
+    "bindings": [
+      { "name": "DIAGRAMS", "class_name": "DiagramCell" },
+      { "name": "CATALOG", "class_name": "DiagramCatalog" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["DiagramCell", "DiagramCatalog"] }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/ws/*", "/mcp", "/health"]
+  },
+  "vars": {
+    "ALLOWED_HOSTS": "localhost,127.0.0.1,[::1]",
+    "ALLOWED_ORIGINS": "localhost,127.0.0.1,[::1]"
+  }
+}

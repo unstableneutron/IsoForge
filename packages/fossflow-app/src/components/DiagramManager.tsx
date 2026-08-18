@@ -192,7 +192,7 @@ export const DiagramManager: React.FC<Props> = ({
     <div className="diagram-manager-overlay">
       <div className="diagram-manager">
         <div className="diagram-manager-header">
-          <h2>Diagram Manager</h2>
+          <h2>IsoForge Diagram Manager</h2>
           <button className="close-button" onClick={onClose}>
             ×
           </button>
@@ -202,7 +202,7 @@ export const DiagramManager: React.FC<Props> = ({
           <span
             className={`storage-badge ${isServerStorage ? 'server' : 'local'}`}
           >
-            {isServerStorage ? '🌐 Server Storage' : '💾 Local Storage'}
+            {isServerStorage ? '🌐 IsoForge Server Storage' : '💾 IsoForge Local Storage'}
           </span>
           {isServerStorage && (
             <span className="storage-note">

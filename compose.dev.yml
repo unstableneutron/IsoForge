@@ -1,17 +1,12 @@
+# Development override for the same deployment services in compose.yml.
+# It keeps the internal celld listener private and only enables more verbose
+# runtime logs. The deploy service still runs to completion before celld starts.
 services:
-  fossflow:
-    build: .
-    ports:
-      - "3000:80"
-      - "3001:3001"
+  deploy:
     environment:
-      - NODE_ENV=development
-      - ENABLE_SERVER_STORAGE=true
-      - STORAGE_PATH=/data/diagrams
-      - ENABLE_GIT_BACKUP=false
-      - HTTP_AUTH_USER=${HTTP_AUTH_USER:-}
-      - HTTP_AUTH_PASSWORD=${HTTP_AUTH_PASSWORD:-}
-      - PUID=${PUID:-}
-      - PGID=${PGID:-}
-    volumes:
-      - ./diagrams:/data/diagrams
+      RUST_LOG: ${RUST_LOG:-debug}
+
+  celld:
+    environment:
+      RUST_LOG: ${RUST_LOG:-debug}
+    restart: "no"

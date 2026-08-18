@@ -6,13 +6,13 @@
         "importFile": "Import File",
         "exportFile": "Export File",
         "quickSaveSession": "Quick Save (Session)",
-        "serverStorage": "Server Storage"
+        "serverStorage": "IsoForge Server"
     },
     "status": {
         "current": "Current",
         "untitled": "Untitled Diagram",
         "modified": "Modified",
-        "sessionStorageNote": "Session storage only - export to save permanently"
+        "sessionStorageNote": "Local session only - export to save permanently"
     },
     "dialog": {
         "save": {
