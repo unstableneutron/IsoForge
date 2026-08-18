@@ -1,17 +1,123 @@
+name: isoforge
+
 services:
-  fossflow:
-    image: abrar74774/fossflow:latest
-    pull_policy: always
-    ports:
-      - 80:80
+  localstack:
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
     environment:
-      - NODE_ENV=production
-      - ENABLE_SERVER_STORAGE=${ENABLE_SERVER_STORAGE:-true}
-      - STORAGE_PATH=/data/diagrams
-      - ENABLE_GIT_BACKUP=${ENABLE_GIT_BACKUP:-false}
-      - HTTP_AUTH_USER=${HTTP_AUTH_USER:-}
-      - HTTP_AUTH_PASSWORD=${HTTP_AUTH_PASSWORD:-}
-      - PUID=${PUID:-}
-      - PGID=${PGID:-}
+      SERVICES: s3
+      PERSISTENCE: "1"
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-localstack}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-localstack}
+      CELLD_BUCKET: ${CELLD_BUCKET:-isoforge-celld}
     volumes:
-      - ./diagrams:/data/diagrams
+      - localstack-data:/var/lib/localstack
+      - ./docker/localstack-init.sh:/etc/localstack/init/ready.d/10-create-celld-bucket.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          awslocal s3api head-bucket
+          --bucket "$${CELLD_BUCKET:-isoforge-celld}"
+          >/dev/null 2>&1
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  assets:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: fossflow-assets
+    image: isoforge-fossflow-assets:1.0.3
+    command:
+      - sh
+      - -c
+      - >-
+        find /assets -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        && cp -a /out/. /assets/
+    volumes:
+      - fossflow-build:/assets
+    restart: "no"
+
+  deploy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: celld-deploy
+      args:
+        CELLD_IMAGE: ghcr.io/denoland/celld:v0.2.1@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530
+        ESBUILD_VERSION: 0.25.9
+    image: isoforge-celld-deploy:0.2.1
+    depends_on:
+      localstack:
+        condition: service_healthy
+      assets:
+        condition: service_completed_successfully
+    environment:
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-localstack}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-localstack}
+      CELLD_BUCKET: ${CELLD_BUCKET:-isoforge-celld}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
+    working_dir: /workspace
+    volumes:
+      - fossflow-build:/workspace/packages/isoforge-worker/public:ro
+    command: ["deploy"]
+    restart: "no"
+
+  celld:
+    image: ghcr.io/denoland/celld:v0.2.1@sha256:7a4380721b6400073f2a26afe70a828410169f658d31b5ef61383e648ca0c530
+    depends_on:
+      deploy:
+        condition: service_completed_successfully
+    environment:
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-localstack}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-localstack}
+      CELLD_BUCKET: ${CELLD_BUCKET:-isoforge-celld}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
+      CELLD_ADDR: 0.0.0.0:8787
+      CELLD_INTERNAL_ADDR: 127.0.0.1:8788
+      CELLD_WATCH: /var/lib/celld/state
+      CELLD_ASSET_CACHE_DIR: /var/lib/celld/assets
+      CELLD_VAR_MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-}
+      CELLD_VAR_ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,[::1]}
+      CELLD_VAR_ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-localhost,127.0.0.1,[::1]}
+    command:
+      - --bucket
+      - s3://${CELLD_BUCKET:-isoforge-celld}
+      - --endpoint
+      - ${S3_ENDPOINT:-http://localstack:4566}
+      - --region
+      - ${AWS_REGION:-us-east-1}
+      - --listen
+      - 0.0.0.0:8787
+      - --internal-listen
+      - 127.0.0.1:8788
+    ports:
+      - "${CELLD_PUBLIC_PORT:-8787}:8787"
+    volumes:
+      - celld-state:/var/lib/celld
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          env -u CELLD_ADDR -u CELLD_INTERNAL_ADDR
+          celld diagnose
+          --bucket "s3://${CELLD_BUCKET:-isoforge-celld}"
+          --endpoint "${S3_ENDPOINT:-http://localstack:4566}"
+          --region "${AWS_REGION:-us-east-1}"
+          --read-only >/dev/null 2>&1
+      interval: 10s
+      timeout: 8s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  localstack-data:
+  celld-state:
+  fossflow-build:

@@ -1,4 +1,9 @@
 import { Model } from 'fossflow/dist/types';
+import {
+  buildModelUpdateBatch,
+  makeIdempotencyKey,
+  normalizeCelldSnapshot
+} from './celldSyncService';
 
 export interface DiagramInfo {
   id: string;
@@ -18,17 +23,14 @@ export interface StorageService {
 
 // Server Storage Implementation
 class ServerStorage implements StorageService {
-  private baseUrl: string;
+  // The app and celld are deployed behind the same origin. Keeping this
+  // relative is important for local Compose, reverse proxies, and hosted
+  // subpaths alike.
+  private readonly baseUrl = '';
   private available: boolean | null = null;
   private availabilityCheckedAt: number | null = null;
   private readonly AVAILABILITY_CACHE_MS = 60000; // Re-check every 60 seconds
-
-  constructor(baseUrl: string = '') {
-    // In production (Docker), use relative paths (nginx proxy)
-    // In development, use localhost:3001
-    const isDevelopment = window.location.hostname === 'localhost' && window.location.port === '3000';
-    this.baseUrl = baseUrl || (isDevelopment ? 'http://localhost:3001' : '');
-  }
+  private readonly revisions = new Map<string, number>();
 
   async isAvailable(): Promise<boolean> {
     // Re-check availability if cache is stale
@@ -40,13 +42,12 @@ class ServerStorage implements StorageService {
     }
 
     try {
-      const response = await fetch(`${this.baseUrl}/api/storage/status`, {
+      const response = await fetch(`${this.baseUrl}/api/diagrams`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(5000) // 5 second timeout
       });
-      const data = await response.json();
-      this.available = data.enabled;
+      this.available = response.ok;
       this.availabilityCheckedAt = Date.now();
       console.log(`Server storage availability: ${this.available}`);
       return this.available ?? false;
@@ -69,12 +70,14 @@ class ServerStorage implements StorageService {
       throw new Error(`Failed to list diagrams: ${response.status} ${errorText}`);
     }
 
-    const diagrams = await response.json();
+    const payload = await response.json();
+    const diagrams = Array.isArray(payload) ? payload : payload.diagrams || [];
     console.log(`Received ${diagrams.length} diagrams from server:`, diagrams);
 
     return diagrams.map((d: any) => ({
       ...d,
-      lastModified: new Date(d.lastModified)
+      name: d.name || d.title || 'Untitled Diagram',
+      lastModified: new Date(d.lastModified || d.updatedAt)
     }));
   }
 
@@ -94,8 +97,18 @@ class ServerStorage implements StorageService {
       }
 
       const data = await response.json();
-      console.log(`ServerStorage: Successfully loaded diagram ${id}, items: ${data.items?.length || 0}`);
-      return data;
+      console.log(
+        `ServerStorage: Successfully loaded diagram ${id}, items: ${data.items?.length || data.model?.items?.length || 0}`
+      );
+      // celld returns a revisioned snapshot while the legacy backend returns
+      // the FossFLOW model directly. Accept both at this storage boundary.
+      try {
+        const snapshot = normalizeCelldSnapshot<Model>(data, id);
+        this.revisions.set(id, snapshot.revision);
+        return snapshot.model;
+      } catch {
+        return data;
+      }
     } catch (error) {
       console.error(`ServerStorage: Error loading diagram ${id}:`, error);
       throw error;
@@ -105,17 +118,43 @@ class ServerStorage implements StorageService {
   async saveDiagram(id: string, data: Model): Promise<void> {
     console.log(`ServerStorage: Saving diagram ${id}`);
     try {
-      const response = await fetch(`${this.baseUrl}/api/diagrams/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+      const idempotencyKey = makeIdempotencyKey();
+      const revision = this.revisions.get(id) ?? 0;
+      let response = await fetch(`${this.baseUrl}/api/diagrams/${id}/operations`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey
+        },
+        body: JSON.stringify(
+          buildModelUpdateBatch(data, revision, idempotencyKey)
+        ),
         signal: AbortSignal.timeout(15000) // 15 second timeout for saves
       });
+
+      // The old FossFLOW backend has no revisioned operation endpoint.
+      if (response.status === 404 || response.status === 405) {
+        response = await fetch(`${this.baseUrl}/api/diagrams/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+          signal: AbortSignal.timeout(15000)
+        });
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`ServerStorage: Failed to save diagram ${id}: ${response.status} ${errorText}`);
         throw new Error(`Failed to save diagram: ${response.status}`);
+      }
+
+      try {
+        const result = await response.json();
+        const snapshot = normalizeCelldSnapshot<Model>(result, id);
+        this.revisions.set(id, snapshot.revision);
+      } catch {
+        // Legacy PUT may acknowledge with { success: true }.
       }
 
       console.log(`ServerStorage: Successfully saved diagram ${id}`);
@@ -133,10 +172,16 @@ class ServerStorage implements StorageService {
   }
 
   async createDiagram(data: Model): Promise<string> {
+    const title = (data as any).name || data.title;
     const response = await fetch(`${this.baseUrl}/api/diagrams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
+      body: JSON.stringify({
+        ...data,
+        id: (data as any).id,
+        title,
+        state: { ...data, title }
+      })
     });
     if (!response.ok) throw new Error('Failed to create diagram');
     const result = await response.json();

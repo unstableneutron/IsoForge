@@ -1,7 +1,7 @@
 {
-  "short_name": "FossFLOW",
-  "name": "FossFLOW - Isometric Diagramming Tool",
-  "description": "Create beautiful isometric diagrams with FossFLOW",
+  "short_name": "IsoForge",
+  "name": "IsoForge - Synchronized Isometric Diagrams",
+  "description": "Create and synchronize beautiful isometric diagrams with IsoForge",
   "icons": [
     {
       "src": "favicon.ico",
